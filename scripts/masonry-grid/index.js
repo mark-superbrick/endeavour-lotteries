@@ -127,16 +127,13 @@ function waitForImagesInContainers(containers) {
 
   const scheduleInit = () => {
     try {
-      // find target masonry containers scoped to the pane when possible
       const containers = pane ? pane.querySelectorAll('[data-masonry-list]') : document.querySelectorAll('[data-masonry-list]');
       waitForImagesInContainers(containers).then(() => {
-        // Defer to next animation frame to ensure layout measurements are stable
         requestAnimationFrame(() => {
           initMasonryGrid();
         });
       }).catch(err => {
         console.error('waitForImagesInContainers error', err);
-        // fallback to init even if waiting failed
         requestAnimationFrame(() => initMasonryGrid());
       });
     } catch (e) {
@@ -144,23 +141,35 @@ function waitForImagesInContainers(containers) {
     }
   };
 
-  // If we can't find the containing pane, fallback to initializing on DOMContentLoaded
+  // Wait for the Webflow tab CSS transition to finish before measuring — the MutationObserver
+  // fires at transition START (opacity 0→1), so measuring before this resolves gives wrong heights.
+  const afterTransition = (cb) => {
+    let fired = false;
+    const run = () => {
+      if (fired) return;
+      fired = true;
+      pane.removeEventListener('transitionend', run);
+      cb();
+    };
+    pane.addEventListener('transitionend', run, { once: true });
+    setTimeout(run, 400); // fallback if transitionend never fires
+  };
+
   if (!pane) {
     document.addEventListener('DOMContentLoaded', scheduleInit);
     return;
   }
 
-  // If the pane is already active on load, initialize after DOM ready and after images
+  // Pane already active on page load — no transition to wait for
   if (pane.classList.contains('w--tab-active')) {
     document.addEventListener('DOMContentLoaded', scheduleInit);
     return;
   }
 
-  // Observe for the pane becoming active (Webflow sets the class 'w--tab-active')
   const mo = new MutationObserver((mutations, obs) => {
     if (pane.classList.contains('w--tab-active')) {
-      scheduleInit();
       obs.disconnect();
+      afterTransition(scheduleInit);
     }
   });
   mo.observe(pane, { attributes: true, attributeFilter: ['class'] });
@@ -170,7 +179,7 @@ function waitForImagesInContainers(containers) {
   if (tabsRoot) {
     const clickHandler = () => {
       if (pane.classList.contains('w--tab-active')) {
-        scheduleInit();
+        afterTransition(scheduleInit);
         try { mo.disconnect(); } catch (e) {}
         tabsRoot.removeEventListener('click', clickHandler);
       }
