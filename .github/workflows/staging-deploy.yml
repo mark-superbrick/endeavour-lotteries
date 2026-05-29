@@ -1,0 +1,34 @@
+name: Purge jsDelivr cache (staging)
+
+on:
+  push:
+    branches:
+      - develop
+    paths:
+      - "scripts/**/*.js"
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get changed JS files
+        id: changed
+        run: |
+          files=$(git diff --name-only HEAD~1 HEAD -- 'scripts/**/*.js' | tr '\n' ' ')
+          echo "files=$files" >> $GITHUB_OUTPUT
+
+      - name: Purge jsDelivr cache
+        if: steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          REPO: ${{ github.repository }}
+        run: |
+          for file in $CHANGED_FILES; do
+            url="https://purge.jsdelivr.net/gh/${REPO}@develop/${file}"
+            echo "Purging: $url"
+            curl -s "$url"
+          done

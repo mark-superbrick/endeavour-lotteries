@@ -1,0 +1,12 @@
+{
+  "name": "endeavour-lotteries",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "browser-sync start --config bs-config.js",
+    "dev:open": "browser-sync start --config bs-config.js --open"
+  },
+  "devDependencies": {
+    "browser-sync": "^3.0.3"
+  }
+}
