@@ -76,9 +76,21 @@ function initMasonryGrid(root) {
     const onResize = debounce(layout, 100);
     window.addEventListener('resize', onResize);
 
-    waitForImages([container]).then(() => requestAnimationFrame(layout)).catch(err => {
+    const fadeIn = () => {
+      requestAnimationFrame(() => {
+        container.style.transition = 'opacity 0.4s ease';
+        container.style.opacity = '1';
+      });
+    };
+
+    container.style.opacity = '0';
+
+    waitForImages([container]).then(() => requestAnimationFrame(() => {
+      layout();
+      fadeIn();
+    })).catch(err => {
       console.error('masonry waitForImages error', err);
-      requestAnimationFrame(() => { try { layout(); } catch (e) { console.error(e); } });
+      requestAnimationFrame(() => { try { layout(); } catch (e) { console.error(e); } finally { fadeIn(); } });
     });
 
     container._masonry = {
@@ -88,7 +100,7 @@ function initMasonryGrid(root) {
         Array.from(container.children).forEach(el => {
           el.style.position = el.style.width = el.style.top = el.style.left = '';
         });
-        container.style.position = container.style.height = '';
+        container.style.position = container.style.height = container.style.opacity = container.style.transition = '';
         delete container._masonry;
       }
     };
