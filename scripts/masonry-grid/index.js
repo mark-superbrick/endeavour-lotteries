@@ -85,6 +85,10 @@ function initMasonryGrid(root) {
 
     container.style.opacity = '0';
 
+    // Safari won't fetch loading="lazy" images that haven't entered the viewport yet,
+    // so waitForImages would hang. Force eager to start the fetch before we wait.
+    container.querySelectorAll('img[loading="lazy"]').forEach(img => { img.loading = 'eager'; });
+
     waitForImages([container]).then(() => requestAnimationFrame(() => {
       layout();
       fadeIn();
