@@ -18,24 +18,60 @@ function waitForImages(containers) {
   }));
 }
 
+// Symbol key avoids collision with other scripts on the DOM element.
+const MASONRY_KEY = Symbol('masonry');
+
 function initMasonryGrid(root) {
   const scope = root || document;
-  scope.querySelectorAll('[data-masonry-list]').forEach(container => {
-    if (container._masonry) return; // idempotent
+
+  // Support passing the container element directly (not just a parent scope).
+  const containers = scope instanceof Element && scope.matches('[data-masonry-list]')
+    ? [scope]
+    : Array.from(scope.querySelectorAll('[data-masonry-list]'));
+
+  containers.forEach(container => {
+    if (container[MASONRY_KEY]) return; // idempotent
 
     const shuffle = container.dataset.masonryShuffle !== 'false';
     let cols, gapPx, colHeights;
+    let destroyed = false;
+
+    // Snapshot inline styles so destroy() can restore exactly what was there before.
+    const origContainer = {
+      position: container.style.position,
+      height: container.style.height,
+      opacity: container.style.opacity,
+      transition: container.style.transition,
+    };
+    const origChildren = new Map();
+    Array.from(container.children).forEach(el => {
+      origChildren.set(el, {
+        position: el.style.position,
+        width: el.style.width,
+        top: el.style.top,
+        left: el.style.left,
+      });
+    });
 
     const getVars = () => {
       const cs = getComputedStyle(container);
-      cols = parseInt(cs.getPropertyValue('--masonry-col'), 10);
+
+      // Strict integer validation — rejects decimals, negatives, and partial parses.
+      const rawCol = cs.getPropertyValue('--masonry-col').trim();
+      cols = Number(rawCol);
+      if (!Number.isInteger(cols) || cols < 1) cols = NaN;
+
+      // Resolve gap to pixels via a probe element; supports any CSS length unit
+      // (px, rem, em, vw, calc, clamp, etc.) without manual unit conversion.
       const rawGap = cs.getPropertyValue('--masonry-gap').trim();
-      if (rawGap.endsWith('em')) {
-        gapPx = parseFloat(rawGap) * parseFloat(cs.fontSize);
-      } else if (rawGap.endsWith('rem')) {
-        gapPx = parseFloat(rawGap) * parseFloat(getComputedStyle(document.documentElement).fontSize);
+      if (!rawGap) {
+        gapPx = NaN;
       } else {
-        gapPx = parseFloat(rawGap);
+        const probe = document.createElement('div');
+        probe.style.cssText = `position:absolute;visibility:hidden;pointer-events:none;width:${rawGap};height:0;`;
+        container.appendChild(probe);
+        gapPx = probe.getBoundingClientRect().width;
+        container.removeChild(probe);
       }
     };
 
@@ -45,7 +81,7 @@ function initMasonryGrid(root) {
         console.warn('masonry: missing or invalid --masonry-col / --masonry-gap on', container);
         return;
       }
-      const wCalc = `(100% - ${(cols - 1)}*var(--masonry-gap)) / ${cols}`;
+      const wCalc = `(100% - ${cols - 1}*var(--masonry-gap)) / ${cols}`;
       colHeights = Array(cols).fill(0);
       container.style.position = 'relative';
       const items = Array.from(container.children);
@@ -65,49 +101,76 @@ function initMasonryGrid(root) {
         colHeights[idx] += h + gapPx;
       });
 
-      container.style.height = `${Math.max(...colHeights)}px`;
+      // Subtract the trailing gap so container height matches content exactly.
+      const maxH = Math.max(...colHeights);
+      container.style.height = `${items.length && maxH > 0 ? maxH - gapPx : maxH}px`;
     };
 
     const debounce = (fn, delay) => {
       let t;
-      return () => { clearTimeout(t); t = setTimeout(fn, delay); };
+      const wrapped = () => { clearTimeout(t); t = setTimeout(fn, delay); };
+      wrapped.cancel = () => clearTimeout(t);
+      return wrapped;
     };
-
-    const onResize = debounce(layout, 100);
-    window.addEventListener('resize', onResize);
 
     const fadeIn = () => {
       requestAnimationFrame(() => {
+        if (destroyed) return;
         container.style.transition = 'opacity 0.4s ease';
         container.style.opacity = '1';
       });
     };
 
+    const onResize = debounce(() => { if (!destroyed) layout(); }, 100);
+    window.addEventListener('resize', onResize);
+
     container.style.opacity = '0';
 
-    // Safari won't fetch loading="lazy" images that haven't entered the viewport yet,
-    // so waitForImages would hang. Force eager to start the fetch before we wait.
+    // Safari won't fetch loading="lazy" images outside the viewport, causing
+    // waitForImages to hang indefinitely. Force eager to start the fetch now.
     container.querySelectorAll('img[loading="lazy"]').forEach(img => { img.loading = 'eager'; });
 
     waitForImages([container]).then(() => requestAnimationFrame(() => {
-      layout();
-      fadeIn();
+      if (destroyed) return;
+      try { layout(); } catch (e) { console.error('masonry layout error', e); } finally { fadeIn(); }
     })).catch(err => {
       console.error('masonry waitForImages error', err);
-      requestAnimationFrame(() => { try { layout(); } catch (e) { console.error(e); } finally { fadeIn(); } });
+      requestAnimationFrame(() => {
+        if (destroyed) return;
+        try { layout(); } catch (e) { console.error(e); } finally { fadeIn(); }
+      });
     });
 
-    container._masonry = {
-      recalc: () => waitForImages([container]).then(layout),
-      destroy: () => {
-        window.removeEventListener('resize', onResize);
-        Array.from(container.children).forEach(el => {
+    // Call recalc() to re-measure and re-layout after external content changes
+    // (new children, font swaps, image src changes). Not auto-observed.
+    const recalc = () => waitForImages([container]).then(layout);
+
+    const destroy = () => {
+      destroyed = true;
+      onResize.cancel();
+      window.removeEventListener('resize', onResize);
+
+      Array.from(container.children).forEach(el => {
+        const orig = origChildren.get(el);
+        if (orig) {
+          el.style.position = orig.position;
+          el.style.width    = orig.width;
+          el.style.top      = orig.top;
+          el.style.left     = orig.left;
+        } else {
           el.style.position = el.style.width = el.style.top = el.style.left = '';
-        });
-        container.style.position = container.style.height = container.style.opacity = container.style.transition = '';
-        delete container._masonry;
-      }
+        }
+      });
+
+      container.style.position   = origContainer.position;
+      container.style.height     = origContainer.height;
+      container.style.opacity    = origContainer.opacity;
+      container.style.transition = origContainer.transition;
+
+      delete container[MASONRY_KEY];
     };
+
+    container[MASONRY_KEY] = { recalc, destroy };
   });
 }
 
@@ -118,18 +181,19 @@ function initMasonryGrid(root) {
     const pane = container.closest('.w-tab-pane');
 
     if (!pane) {
-      initMasonryGrid(container.parentElement || document);
+      // Pass container directly — avoids rescanning siblings in the parent scope.
+      initMasonryGrid(container);
       return;
     }
 
     if (pane.classList.contains('w--tab-active')) {
-      initMasonryGrid(pane);
+      initMasonryGrid(container);
       return;
     }
 
     const mo = new MutationObserver((_, obs) => {
       if (pane.classList.contains('w--tab-active')) {
-        initMasonryGrid(pane);
+        initMasonryGrid(container);
         obs.disconnect();
       }
     });
